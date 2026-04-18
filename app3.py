@@ -566,11 +566,10 @@ def make_waterfall(labels, values, measure, text, title, yaxis_title):
         margin=dict(l=30, r=30, t=70, b=110),
         font=dict(color="#F3F4F6", size=13),
         yaxis=dict(
-            title=yaxis_title,
+            title=dict(text=yaxis_title, font=dict(size=14)),
             gridcolor="rgba(255,255,255,0.12)",
             zerolinecolor="rgba(255,255,255,0.20)",
             tickfont=dict(size=12),
-            titlefont=dict(size=14),
         ),
         xaxis=dict(
             tickangle=-28,
@@ -579,7 +578,7 @@ def make_waterfall(labels, values, measure, text, title, yaxis_title):
             categoryorder="array",
             categoryarray=labels,
         ),
-        hoverlabel=dict(font_size=12),
+        hoverlabel=dict(font=dict(size=12)),
     )
     return fig
 
