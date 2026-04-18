@@ -1,10 +1,9 @@
-import math
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(
-    page_title="EY | Geopolitical Bank Capital Stress Dashboard (Rebuilt)",
+    page_title="EY | Geopolitical Bank Capital Stress Dashboard (Recalibrated)",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -25,10 +24,6 @@ def bps(x: float) -> str:
     return f"{x:,.0f} bps"
 
 
-def pct(x: float) -> str:
-    return f"{x:.1f}%"
-
-
 # -----------------------------
 # Header
 # -----------------------------
@@ -37,7 +32,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    "*Rebuilt version: reconciled CET1 math, RWA-based balance sheet, PPNR absorption, management actions, and stronger stress logic*"
+    "*Recalibrated version: reconciled opening CET1 ratio, saner loss magnitudes, and consistent one-year-style stress interpretation*"
 )
 st.markdown("---")
 
@@ -71,18 +66,10 @@ with st.sidebar:
         ],
     )
 
-    oil_dependency = st.slider(
-        "Portfolio Sensitivity to Energy / Oil Shock", 0.5, 1.5, 1.0, 0.1
-    )
-    sanctions_exposure = st.slider(
-        "Direct Exposure to Sanctions / Cross-Border Corridor Risk", 0.0, 1.5, 0.5, 0.1
-    )
-    cyber_vulnerability = st.slider(
-        "Operational / Cyber Vulnerability", 0.5, 1.5, 1.0, 0.1
-    )
-    vulnerable_sector_share = st.slider(
-        "Vulnerable Sector Share of Loan Book", 5, 50, 20, 1
-    ) / 100.0
+    oil_dependency = st.slider("Portfolio Sensitivity to Energy / Oil Shock", 0.5, 1.5, 1.0, 0.1)
+    sanctions_exposure = st.slider("Direct Exposure to Sanctions / Cross-Border Corridor Risk", 0.0, 1.5, 0.5, 0.1)
+    cyber_vulnerability = st.slider("Operational / Cyber Vulnerability", 0.5, 1.5, 1.0, 0.1)
+    vulnerable_sector_share = st.slider("Vulnerable Sector Share of Loan Book (%)", 5, 50, 20, 1) / 100.0
 
     st.markdown("---")
     st.markdown("<h2 style='color:#FFE600;'>Management Actions</h2>", unsafe_allow_html=True)
@@ -95,155 +82,153 @@ with st.sidebar:
     enable_overrides = st.checkbox("Enable calibration overrides", value=False)
 
     if enable_overrides:
-        base_pd = st.slider("Base PD (%)", 0.5, 5.0, 2.0, 0.1) / 100
-        downturn_lgd = st.slider("Downturn LGD (%)", 20, 75, 45, 5) / 100
-        deposit_beta = st.slider("Deposit Beta", 0.1, 1.0, 0.5, 0.05)
-        annual_ppnr_roa = st.slider("Annual PPNR / RWA (%)", 0.2, 3.0, 1.2, 0.1) / 100
-        payout_ratio = st.slider("Baseline Capital Distribution Ratio (%)", 0, 60, 25, 5) / 100
-        hedge_offset = st.slider("Market Hedging Offset (%)", 0, 50, 20, 5) / 100
-        rwa_mitigation_pct = st.slider("RWA Mitigation (%)", 0, 20, 8, 1) / 100
+        base_pd = st.slider("Base PD (%)", 0.3, 3.0, 1.2, 0.1) / 100
+        downturn_lgd = st.slider("Downturn LGD (%)", 25, 65, 40, 5) / 100
+        deposit_beta = st.slider("Deposit Beta", 0.1, 1.0, 0.4, 0.05)
+        annual_ppnr_to_rwa = st.slider("Annual PPNR / RWA (%)", 0.3, 2.5, 1.0, 0.1) / 100
+        payout_ratio = st.slider("Baseline Capital Distribution Ratio (%)", 0, 60, 20, 5) / 100
+        hedge_offset = st.slider("Market Hedging Offset (%)", 0, 50, 15, 5) / 100
+        rwa_mitigation_pct = st.slider("RWA Mitigation on Add-ons (%)", 0, 20, 6, 1) / 100
     else:
-        base_pd = 0.020
-        downturn_lgd = 0.45
-        deposit_beta = 0.50
-        annual_ppnr_roa = 0.012
-        payout_ratio = 0.25
-        hedge_offset = 0.20
-        rwa_mitigation_pct = 0.08
+        base_pd = 0.012
+        downturn_lgd = 0.40
+        deposit_beta = 0.40
+        annual_ppnr_to_rwa = 0.010
+        payout_ratio = 0.20
+        hedge_offset = 0.15
+        rwa_mitigation_pct = 0.06
 
 
 # -----------------------------
-# RWA-based balance sheet archetypes
+# Reconciled opening balance sheet
 # -----------------------------
 profile_map = {
     "Universal Bank": {
-        "loan_book_to_rwa": 1.55,
-        "banking_book_securities_to_rwa": 0.55,
-        "trading_book_to_rwa": 0.18,
-        "wholesale_funding_to_rwa": 0.70,
-        "deposit_base_to_rwa": 1.40,
-        "direct_exposure_to_rwa": 0.06,
-        "ops_cost_to_rwa": 0.012,
-        "irrbb_duration": 4.8,
-        "trading_duration": 2.2,
-        "avg_loan_rw": 0.65,
+        "rwa_density": 0.58,
+        "loan_share_assets": 0.54,
+        "banking_book_securities_share_assets": 0.18,
+        "trading_book_share_assets": 0.06,
+        "wholesale_funding_share_assets": 0.22,
+        "deposit_share_assets": 0.62,
+        "direct_exposure_share_assets": 0.018,
+        "loan_rwa_density": 0.70,
+        "irrbb_duration": 3.8,
+        "trading_duration": 1.8,
     },
     "Wholesale / Markets Heavy": {
-        "loan_book_to_rwa": 1.20,
-        "banking_book_securities_to_rwa": 0.40,
-        "trading_book_to_rwa": 0.32,
-        "wholesale_funding_to_rwa": 1.00,
-        "deposit_base_to_rwa": 0.95,
-        "direct_exposure_to_rwa": 0.10,
-        "ops_cost_to_rwa": 0.015,
-        "irrbb_duration": 4.2,
-        "trading_duration": 2.8,
-        "avg_loan_rw": 0.70,
+        "rwa_density": 0.62,
+        "loan_share_assets": 0.42,
+        "banking_book_securities_share_assets": 0.13,
+        "trading_book_share_assets": 0.12,
+        "wholesale_funding_share_assets": 0.34,
+        "deposit_share_assets": 0.42,
+        "direct_exposure_share_assets": 0.030,
+        "loan_rwa_density": 0.75,
+        "irrbb_duration": 3.4,
+        "trading_duration": 2.1,
     },
     "Retail / Deposit Heavy": {
-        "loan_book_to_rwa": 1.85,
-        "banking_book_securities_to_rwa": 0.62,
-        "trading_book_to_rwa": 0.08,
-        "wholesale_funding_to_rwa": 0.30,
-        "deposit_base_to_rwa": 1.75,
-        "direct_exposure_to_rwa": 0.03,
-        "ops_cost_to_rwa": 0.010,
-        "irrbb_duration": 5.2,
-        "trading_duration": 1.7,
-        "avg_loan_rw": 0.55,
+        "rwa_density": 0.52,
+        "loan_share_assets": 0.63,
+        "banking_book_securities_share_assets": 0.20,
+        "trading_book_share_assets": 0.03,
+        "wholesale_funding_share_assets": 0.10,
+        "deposit_share_assets": 0.76,
+        "direct_exposure_share_assets": 0.010,
+        "loan_rwa_density": 0.60,
+        "irrbb_duration": 4.1,
+        "trading_duration": 1.2,
     },
     "EM / Cross-Border Heavy": {
-        "loan_book_to_rwa": 1.45,
-        "banking_book_securities_to_rwa": 0.48,
-        "trading_book_to_rwa": 0.15,
-        "wholesale_funding_to_rwa": 0.78,
-        "deposit_base_to_rwa": 1.25,
-        "direct_exposure_to_rwa": 0.12,
-        "ops_cost_to_rwa": 0.014,
-        "irrbb_duration": 4.6,
-        "trading_duration": 2.4,
-        "avg_loan_rw": 0.75,
+        "rwa_density": 0.65,
+        "loan_share_assets": 0.50,
+        "banking_book_securities_share_assets": 0.16,
+        "trading_book_share_assets": 0.05,
+        "wholesale_funding_share_assets": 0.26,
+        "deposit_share_assets": 0.55,
+        "direct_exposure_share_assets": 0.035,
+        "loan_rwa_density": 0.80,
+        "irrbb_duration": 3.6,
+        "trading_duration": 1.9,
     },
 }
 
 p = profile_map[bank_profile]
 
-# Reconciled opening denominator: CET1 ratio actually drives opening RWA
 base_rwa = starting_cet1 / (baseline_cet1_ratio / 100.0)
-loan_book = base_rwa * p["loan_book_to_rwa"]
-banking_book_securities = base_rwa * p["banking_book_securities_to_rwa"]
-trading_book = base_rwa * p["trading_book_to_rwa"]
-wholesale_funding = base_rwa * p["wholesale_funding_to_rwa"]
-deposit_base = base_rwa * p["deposit_base_to_rwa"]
-direct_exposure_base = base_rwa * p["direct_exposure_to_rwa"]
-ops_cost_base = base_rwa * p["ops_cost_to_rwa"]
+total_assets = base_rwa / p["rwa_density"]
+loan_book = total_assets * p["loan_share_assets"]
+banking_book_securities = total_assets * p["banking_book_securities_share_assets"]
+trading_book = total_assets * p["trading_book_share_assets"]
+wholesale_funding = total_assets * p["wholesale_funding_share_assets"]
+deposit_base = total_assets * p["deposit_share_assets"]
+direct_exposure_base = total_assets * p["direct_exposure_share_assets"]
+
+opening_ratio_check = (starting_cet1 / base_rwa) * 100 if base_rwa > 0 else 0.0
 
 
 # -----------------------------
 # Stage 1: Geopolitical -> macro translation
 # -----------------------------
-oil_peak = 75 + (severity * 8 * oil_dependency) * (1 + 0.35 * duration_years)
-yield_shock_bps = (severity * 10) + (duration_years * 45)
-credit_spread_shock_bps = (severity * 12) + (duration_years * 25)
-wholesale_funding_spread_bps = (severity * 11) + (duration_years * 20)
-fx_stress_index = (severity * 0.7 + duration_years * 1.2) * (1 + 0.4 * sanctions_exposure)
+# Interpret as peak one-year stress conditions rather than cumulative multi-year losses.
+duration_factor = clamp(0.65 + 0.35 * duration_years, 0.70, 1.40)
 
-macro_multiplier = 1 + 0.05 * severity + 0.08 * duration_years
+oil_peak = 75 + (severity * 6 * oil_dependency) * duration_factor
+yield_shock_bps = (severity * 8 + duration_years * 20) * duration_factor
+credit_spread_shock_bps = (severity * 10 + duration_years * 18) * duration_factor
+wholesale_funding_spread_bps = (severity * 9 + duration_years * 14) * duration_factor
+fx_stress_index = (severity * 0.45 + duration_years * 0.60) * (1 + 0.35 * sanctions_exposure)
+
+macro_multiplier = 1 + 0.035 * severity + 0.04 * duration_years
 
 
 # -----------------------------
 # Stage 2: Transmission channels
 # -----------------------------
-# 1) Market channel: IRRBB and trading/fair-value stress, with optional hedging offset
+# 1) Market channel
 irrbb_yield_decimal = yield_shock_bps / 10000
 credit_spread_decimal = credit_spread_shock_bps / 10000
 
-raw_irrbb_loss = banking_book_securities * p["irrbb_duration"] * irrbb_yield_decimal
-raw_trading_loss = trading_book * p["trading_duration"] * (
-    0.55 * irrbb_yield_decimal + 0.45 * credit_spread_decimal
-)
+raw_irrbb_loss = banking_book_securities * p["irrbb_duration"] * irrbb_yield_decimal * 0.55
+raw_trading_loss = trading_book * p["trading_duration"] * (0.45 * irrbb_yield_decimal + 0.55 * credit_spread_decimal)
 raw_market_loss = raw_irrbb_loss + raw_trading_loss
 hedging_benefit = raw_market_loss * hedge_offset if enable_hedging else 0.0
 market_loss = max(0.0, raw_market_loss - hedging_benefit)
 
-# 2) Credit channel: stressed PD + vulnerable sectors + downturn LGD + PPNR absorption
+# 2) Credit channel
 pd_multiplier = (
     1
-    + 0.60 * max(0, (oil_peak - 75) / 100)
-    + 0.90 * (yield_shock_bps / 1000)
-    + 0.50 * (credit_spread_shock_bps / 1000)
-) * (1 + 0.35 * duration_years)
+    + 0.30 * max(0, (oil_peak - 75) / 100)
+    + 0.45 * (yield_shock_bps / 1000)
+    + 0.35 * (credit_spread_shock_bps / 1000)
+)
+pd_multiplier *= (1 + 0.18 * duration_years)
 pd_multiplier *= macro_multiplier
 
-sector_overlay = 1 + vulnerable_sector_share * (0.8 * oil_dependency + 0.4 * sanctions_exposure)
-stressed_pd = clamp(base_pd * pd_multiplier * sector_overlay, base_pd, 0.25)
+sector_overlay = 1 + vulnerable_sector_share * (0.35 * oil_dependency + 0.25 * sanctions_exposure)
+stressed_pd = clamp(base_pd * pd_multiplier * sector_overlay, base_pd, 0.08)
 stressed_lgd = clamp(
-    downturn_lgd * (1 + 0.10 * severity / 10 + 0.08 * duration_years),
+    downturn_lgd * (1 + 0.04 * severity / 10 + 0.04 * max(0.0, duration_years - 1.0)),
     downturn_lgd,
-    0.85,
+    0.60,
 )
 credit_loss_gross = loan_book * stressed_pd * stressed_lgd
 
-# PPNR as first line of defense against losses
-ppnr_pre_stress = base_rwa * annual_ppnr_roa * duration_years
-ppnr_stress_factor = clamp(1 - (0.05 * severity + 0.03 * duration_years), 0.35, 0.95)
+ppnr_pre_stress = base_rwa * annual_ppnr_to_rwa
+ppnr_stress_factor = clamp(1 - (0.035 * severity + 0.02 * max(0.0, duration_years - 1.0)), 0.50, 0.95)
 stressed_ppnr = ppnr_pre_stress * ppnr_stress_factor
 credit_loss = max(0.0, credit_loss_gross - stressed_ppnr)
 
-# 3) Liquidity / funding channel: wholesale repricing + deposit repricing + runoff penalty
-wholesale_funding_cost = wholesale_funding * (wholesale_funding_spread_bps / 10000) * (
-    0.75 + 0.25 * duration_years
-)
-deposit_repricing_cost = deposit_base * (yield_shock_bps / 10000) * deposit_beta * 0.15
+# 3) Liquidity / funding channel
+wholesale_funding_cost = wholesale_funding * (wholesale_funding_spread_bps / 10000) * 0.65
+deposit_repricing_cost = deposit_base * (yield_shock_bps / 10000) * deposit_beta * 0.06
 deposit_runoff_rate = clamp(
-    0.01 * severity * (0.5 + 0.5 * duration_years) * (0.6 + 0.4 * sanctions_exposure),
+    0.0025 * severity * (0.75 + 0.25 * duration_years) * (0.7 + 0.3 * sanctions_exposure),
     0.0,
-    0.20,
+    0.04,
 )
-runoff_replacement_cost = deposit_base * deposit_runoff_rate * (
-    wholesale_funding_spread_bps / 10000
-) * 0.50
-liquidity_buffer_usage = base_rwa * 0.003 * severity * (0.5 + 0.5 * duration_years)
+runoff_replacement_cost = deposit_base * deposit_runoff_rate * (wholesale_funding_spread_bps / 10000) * 0.30
+liquidity_buffer_usage = total_assets * 0.0008 * severity * (0.6 + 0.4 * min(duration_years, 2.0))
 funding_liquidity_loss = (
     wholesale_funding_cost
     + deposit_repricing_cost
@@ -252,31 +237,25 @@ funding_liquidity_loss = (
 )
 
 # 4) Direct exposure / sanctions / corridor disruption
-sanctions_loss = (
-    direct_exposure_base
-    * sanctions_exposure
-    * (0.03 * severity)
-    * (1 + 0.30 * duration_years)
+direct_exposure_loss = direct_exposure_base * sanctions_exposure * (
+    0.015 * severity + 0.010 * max(duration_years, 0.5)
 )
-settlement_and_corridor_loss = (
-    direct_exposure_base * sanctions_exposure * 0.01 * (severity ** 1.15)
-)
-direct_exposure_loss = sanctions_loss + settlement_and_corridor_loss
 
 # 5) Operational / cyber resilience
-ops_loss = ops_cost_base * cyber_vulnerability * (0.45 * severity + 0.35 * duration_years)
-fraud_and_recovery_loss = base_rwa * 0.0015 * severity * cyber_vulnerability
-operational_cyber_loss = ops_loss + fraud_and_recovery_loss
+# Event-style calibration to avoid runaway losses.
+ops_event_rate = (0.0006 + 0.00045 * severity + 0.00025 * max(0.0, duration_years - 1.0)) * cyber_vulnerability
+ops_event_rate = clamp(ops_event_rate, 0.0005, 0.0080)
+operational_cyber_loss = total_assets * ops_event_rate
 
 
 # -----------------------------
-# Stage 3: RWA inflation and management actions
+# Stage 3: RWA inflation and capital actions
 # -----------------------------
-credit_rwa_inflation = base_rwa * 0.012 * severity * (1 + 0.30 * duration_years)
-market_rwa_inflation = base_rwa * 0.006 * severity * (1 + p["trading_book_to_rwa"] * 0.50)
-ccr_cva_rwa_inflation = base_rwa * 0.004 * severity * (1 + sanctions_exposure)
-fx_rwa_inflation = base_rwa * 0.002 * fx_stress_index
-operational_rwa_inflation = base_rwa * 0.0015 * severity * cyber_vulnerability
+credit_rwa_inflation = loan_book * p["loan_rwa_density"] * (0.010 + 0.0035 * severity) * (0.85 + 0.15 * min(duration_years, 2.0))
+market_rwa_inflation = trading_book * 0.20 * (0.010 + 0.003 * severity)
+ccr_cva_rwa_inflation = max(trading_book, direct_exposure_base * 3.0) * 0.12 * 0.01 * severity * (1 + 0.25 * sanctions_exposure)
+fx_rwa_inflation = base_rwa * 0.0008 * fx_stress_index
+operational_rwa_inflation = base_rwa * 0.0006 * severity * cyber_vulnerability
 
 gross_rwa_addon = (
     credit_rwa_inflation
@@ -288,10 +267,7 @@ gross_rwa_addon = (
 rwa_mitigation = gross_rwa_addon * rwa_mitigation_pct if enable_rwa_mitigation else 0.0
 stressed_rwa = base_rwa + gross_rwa_addon - rwa_mitigation
 
-# Capital actions
-capital_distribution_saved = (
-    base_rwa * annual_ppnr_roa * payout_ratio * duration_years if cancel_distributions else 0.0
-)
+capital_distribution_saved = base_rwa * annual_ppnr_to_rwa * payout_ratio if cancel_distributions else 0.0
 
 loss_components = {
     "Market": market_loss,
@@ -307,9 +283,7 @@ stressed_cet1_ratio = (stressed_cet1 / stressed_rwa) * 100 if stressed_rwa > 0 e
 
 required_cet1_ratio = 9.0
 buffer_headroom = stressed_cet1_ratio - required_cet1_ratio
-breach_probability = 99.5 if buffer_headroom <= 0 else clamp(100 - buffer_headroom * 16, 1, 95)
-
-opening_ratio_check = (starting_cet1 / base_rwa) * 100 if base_rwa > 0 else 0.0
+breach_indicator = 99.5 if buffer_headroom <= 0 else clamp(100 - buffer_headroom * 13, 1, 95)
 
 
 # -----------------------------
@@ -345,12 +319,12 @@ with tab1:
         delta_color="inverse",
     )
     c3.metric("Capital Depletion", usd_billions(total_depletion))
-    c4.metric("Buffer Breach Indicator", f"{breach_probability:.1f}%", delta_color="inverse")
+    c4.metric("Breach Indicator", f"{breach_indicator:.1f}%", delta_color="inverse")
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Starting RWA", usd_billions(base_rwa))
     c6.metric("Stressed RWA", usd_billions(stressed_rwa), usd_billions(stressed_rwa - base_rwa))
-    c7.metric("PPNR Offset", usd_billions(stressed_ppnr))
+    c7.metric("Stressed PPNR Offset", usd_billions(stressed_ppnr))
     c8.metric("Capital Actions Saved", usd_billions(capital_distribution_saved))
 
     wf = go.Figure(
@@ -411,10 +385,11 @@ with tab1:
             f"""
             **Bank archetype:** {bank_profile}
 
-            **Opening balance sheet derived from reconciled starting ratio**
+            **Opening balance sheet**
             - Starting CET1 = **{usd_billions(starting_cet1)}**
             - Baseline CET1 ratio = **{baseline_cet1_ratio:.1f}%**
             - Derived starting RWA = **{usd_billions(base_rwa)}**
+            - Derived total assets = **{usd_billions(total_assets)}**
             - Loan book = **{usd_billions(loan_book)}**
             - Banking book securities = **{usd_billions(banking_book_securities)}**
             - Trading book = **{usd_billions(trading_book)}**
@@ -439,12 +414,10 @@ with tab1:
             - Liquidity buffer usage = **{usd_billions(liquidity_buffer_usage)}**
 
             **Direct exposure / sanctions**
-            - Sanctions loss = **{usd_billions(sanctions_loss)}**
-            - Settlement / corridor disruption = **{usd_billions(settlement_and_corridor_loss)}**
+            - Net direct exposure loss = **{usd_billions(direct_exposure_loss)}**
 
             **Operational / cyber**
-            - Operational disruption = **{usd_billions(ops_loss)}**
-            - Fraud / recovery = **{usd_billions(fraud_and_recovery_loss)}**
+            - Event-style operational / cyber loss = **{usd_billions(operational_cyber_loss)}**
 
             **RWA inflation**
             - Credit RWA uplift = **{usd_billions(credit_rwa_inflation)}**
@@ -453,9 +426,6 @@ with tab1:
             - FX / fragmentation uplift = **{usd_billions(fx_rwa_inflation)}**
             - Operational RWA uplift = **{usd_billions(operational_rwa_inflation)}**
             - RWA mitigation benefit = **{usd_billions(rwa_mitigation)}**
-
-            **Capital actions**
-            - Distributions saved = **{usd_billions(capital_distribution_saved)}**
             """
         )
 
@@ -466,15 +436,13 @@ with tab2:
         {
             "Channel": list(loss_components.keys()),
             "Loss ($B)": list(loss_components.values()),
-            "% of Total": [
-                x / total_depletion * 100 if total_depletion > 0 else 0 for x in loss_components.values()
-            ],
+            "% of Total": [x / total_depletion * 100 if total_depletion > 0 else 0 for x in loss_components.values()],
             "Primary Driver": [
                 "Rates + spreads net of hedging",
-                "Borrower default, vulnerable sectors, downturn LGD, net of PPNR",
-                "Wholesale spread + deposit repricing + runoff replacement",
-                "Sanctions + trapped flows + settlement disruption",
-                "Cyber + third-party + business continuity",
+                "Borrower default and vulnerable-sector overlay, net of PPNR",
+                "Wholesale repricing + deposit pass-through + runoff",
+                "Sanctions + settlement friction + trapped flows",
+                "Cyber / operational event loss",
             ],
         }
     )
@@ -501,14 +469,9 @@ with tab2:
 
     st.markdown(
         """
-        **Design principle:** the model treats channels as **distinct first-order transmission mechanisms**:
-        1. **Market** = valuation and fair-value effects from rates and spreads, net of simple hedging.
-        2. **Credit** = borrower distress, sector overlays, downturn LGD, partially offset by PPNR.
-        3. **Liquidity / Funding** = liability-side repricing, runoff replacement cost, and liquidity buffer usage.
-        4. **Direct Exposure / Sanctions** = blocked assets, settlement friction, corridor interruption.
-        5. **Operational / Cyber** = disruption, fraud, third-party outages, recovery cost.
+        **Design principle:** channels remain deliberately transparent and separately challengeable.
 
-        This is deliberately transparent rather than fully regulatory. The intent is defensible scenario translation, not black-box precision.
+        This build is meant to feel like a credible advisory translation of a geopolitical stress, not a black-box regulatory engine and not a catastrophe generator.
         """
     )
 
@@ -518,35 +481,34 @@ with tab3:
         """
         The engine has three layers.
 
-        ### Stage 1 — Translate conflict into macro-financial shocks
-        Severity and duration drive oil, rates, spreads, funding pressure, and an FX/fragmentation index.
+        ### Stage 1 — Translate conflict into peak one-year macro-financial shocks
+        Severity and duration shape oil, rates, spreads, funding pressure, and an FX/fragmentation index.
         """
     )
-    st.latex(r"P_{oil} = 75 + (8S \times OilSensitivity) \times (1 + 0.35D)")
-    st.latex(r"\Delta Y = 10S + 45D")
-    st.latex(r"\Delta CS = 12S + 25D")
-    st.latex(r"\Delta F = 11S + 20D")
+    st.latex(r"RWA_{start} = \frac{CET1_{start}}{CET1Ratio_{start}}")
+    st.latex(r"Assets_{start} = \frac{RWA_{start}}{RWA\ Density_{archetype}}")
+    st.latex(r"\Delta Y, \Delta CS, \Delta F = f(Severity, Duration)")
 
     st.markdown("### Stage 2 — Apply five distinct loss channels")
     st.latex(r"L_{market} = L_{IRRBB} + L_{trading} - HedgeBenefit")
-    st.latex(r"L_{credit} = LoanBook \times PD_{stressed} \times LGD_{downturn} - PPNR_{stressed}")
-    st.latex(r"L_{liq} = WholesaleFunding \times \Delta F + DepositBase \times DepositBeta \times \Delta Y + RunoffCost + BufferUsage")
-    st.latex(r"L_{direct} = SanctionsLoss + SettlementLoss")
-    st.latex(r"L_{ops} = OpsDisruption + FraudRecovery")
+    st.latex(r"L_{credit} = LoanBook \times PD_{stressed} \times LGD_{stressed} - PPNR_{stressed}")
+    st.latex(r"L_{liq} = WholesaleRepricing + DepositPassThrough + RunoffCost + BufferUsage")
+    st.latex(r"L_{direct} = DirectExposure \times StressFactor")
+    st.latex(r"L_{ops} = Assets \times EventRate")
 
     st.markdown("### Stage 3 — Stress both numerator and denominator")
     st.latex(r"CET1_{stressed} = CET1_{start} - \sum L_i + CapitalActions")
-    st.latex(r"RWA_{stressed} = RWA_{start} + \Delta RWA_{credit} + \Delta RWA_{market} + \Delta RWA_{CCR/CVA} + \Delta RWA_{FX} + \Delta RWA_{ops} - Mitigation")
+    st.latex(r"RWA_{stressed} = RWA_{start} + \sum \Delta RWA_i - Mitigation")
     st.latex(r"CET1Ratio_{stressed} = \frac{CET1_{stressed}}{RWA_{stressed}}")
 
     st.markdown(
         """
-        **What changed in this rebuilt version**
-        - Opening **RWA now reconciles exactly** to the selected baseline CET1 ratio.
-        - Archetypes scale exposures from **RWA**, not directly from CET1.
-        - Credit losses include **vulnerable-sector overlays**, **downturn LGD**, and **PPNR absorption**.
-        - Management actions can reduce the capital hit through **distribution cancellation**, **partial hedging**, and **RWA mitigation**.
-        - Operational risk now affects both **losses** and **RWA**.
+        **What is fixed in this recalibrated version**
+        - Opening CET1 ratio now truly reconciles to opening RWA.
+        - Exposures are derived from total assets using an archetype RWA density, avoiding runaway scaling.
+        - Operational / cyber is now calibrated as a capped event-style loss rather than a large recurring-cost multiplier.
+        - Duration is interpreted as shaping a **peak stress year**, not mechanically compounding every channel.
+        - Credit, funding, and RWA inflation are all brought back into advisory-plausible ranges.
         """
     )
 
@@ -561,26 +523,19 @@ with tab4:
         It is **not** a regulatory capital engine, CCAR model, ICAAP model, or legal view on sanctions exposure.
 
         #### Defensible assumptions in this build
-        - **Reconciled opening ratio:** the opening CET1 ratio binds the denominator.
+        - **Reconciled opening ratio:** opening CET1 and RWA tie exactly.
+        - **Archetype RWA density:** links RWA back to a more sensible asset base.
         - **Named channels:** each loss bucket maps to a clear mechanism.
-        - **RWA-based archetype calibration:** better than pure CET1 scaling while still simple.
-        - **Numerator + denominator stress:** both CET1 capital and RWA are stressed.
-        - **PPNR and management actions:** allows a more realistic capital-absorption narrative.
+        - **PPNR and capital actions:** provides a more realistic pre-CET1 absorption narrative.
+        - **Numerator and denominator stress:** both capital and RWA move under stress.
 
         #### Limitations
-        - Coefficients remain illustrative rather than empirically fitted.
-        - No asset-class-level LGD, migration matrix, or obligor segmentation.
-        - No legal-entity, jurisdiction, accounting, OCI/P&L, or hedge-designation treatment.
-        - No explicit LCR / NSFR, collateral waterfall, or central-bank facility modeling.
-        - No second-round macro feedback loops or dynamic balance-sheet evolution.
-        - The breach indicator is heuristic, not a true statistical probability model.
-
-        #### How to support the assumptions in a client-ready methodology note
-        1. Map each coefficient to a public source range or internal benchmark range.
-        2. Back-test directionally against selected historical episodes.
-        3. Replace archetypes with client-specific balance-sheet inputs.
-        4. Add sector overlays for CRE, energy, trade finance, sovereign, and leveraged lending.
-        5. Add accounting views, management actions, and multi-period capital planning.
+        - Coefficients remain illustrative rather than empirically estimated.
+        - No obligor-level PD migration, staging, or asset-class-specific LGD.
+        - No accounting treatment split across OCI, P&L, AFS, HTM, or hedge designation.
+        - No explicit LCR / NSFR engine, collateral waterfall, or central-bank facility modeling.
+        - No multi-period balance-sheet evolution or management reaction function.
+        - The breach indicator is heuristic, not statistical.
         """
     )
 
@@ -591,19 +546,16 @@ with tab5:
         > **"Which channel hurts us most if the conflict is short but severe versus persistent but moderate?"**
         - Compare a high-severity 3-month case with a moderate-severity 24-month case.
 
-        > **"Is our capital ratio falling more because of losses or because of RWA inflation?"**
-        - Keep severity constant and vary duration to show denominator pressure.
+        > **"How much of the downside is absorbed before CET1 is hit?"**
+        - Focus on PPNR offset and capital actions.
 
-        > **"How much downside is absorbed by earnings and management actions before CET1 is hit?"**
-        - Toggle PPNR-related assumptions, capital distributions, and RWA mitigation.
+        > **"Is our ratio falling more because of losses or because of RWA inflation?"**
+        - Keep severity constant and vary duration.
 
-        > **"How much of the downside is direct regional exposure versus global market repricing?"**
+        > **"How much downside is direct regional exposure versus global market repricing?"**
         - Increase sanctions exposure while keeping oil sensitivity steady.
 
         > **"Would a retail-heavy bank or a markets-heavy bank be more resilient?"**
-        - Switch archetypes and compare loss composition and stressed ratio.
-
-        > **"What happens if cyber escalation becomes the dominant second-order effect?"**
-        - Raise cyber vulnerability to show how non-credit risks can dominate the tail.
+        - Switch archetypes and compare both loss mix and final ratio.
         """
     )
