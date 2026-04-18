@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(
-    page_title="EY | Geopolitical Bank Capital Stress Dashboard (Recalibrated)",
+    page_title="EY | Geopolitical Bank Capital Stress Dashboard",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -32,7 +32,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    "*Recalibrated version: reconciled opening CET1 ratio, saner loss magnitudes, and consistent one-year-style stress interpretation*"
+    "*Recalibrated version: reconciled opening CET1 ratio, visible credit loss, separate PPNR support, and saner advisory magnitudes*"
 )
 st.markdown("---")
 
@@ -85,7 +85,7 @@ with st.sidebar:
         base_pd = st.slider("Base PD (%)", 0.3, 3.0, 1.2, 0.1) / 100
         downturn_lgd = st.slider("Downturn LGD (%)", 25, 65, 40, 5) / 100
         deposit_beta = st.slider("Deposit Beta", 0.1, 1.0, 0.4, 0.05)
-        annual_ppnr_to_rwa = st.slider("Annual PPNR / RWA (%)", 0.3, 2.5, 1.0, 0.1) / 100
+        annual_ppnr_to_rwa = st.slider("Annual PPNR / RWA (%)", 0.2, 2.0, 0.8, 0.1) / 100
         payout_ratio = st.slider("Baseline Capital Distribution Ratio (%)", 0, 60, 20, 5) / 100
         hedge_offset = st.slider("Market Hedging Offset (%)", 0, 50, 15, 5) / 100
         rwa_mitigation_pct = st.slider("RWA Mitigation on Add-ons (%)", 0, 20, 6, 1) / 100
@@ -93,7 +93,7 @@ with st.sidebar:
         base_pd = 0.012
         downturn_lgd = 0.40
         deposit_beta = 0.40
-        annual_ppnr_to_rwa = 0.010
+        annual_ppnr_to_rwa = 0.008
         payout_ratio = 0.20
         hedge_offset = 0.15
         rwa_mitigation_pct = 0.06
@@ -155,6 +155,7 @@ profile_map = {
 
 p = profile_map[bank_profile]
 
+# Opening CET1 ratio now truly reconciles to opening RWA
 base_rwa = starting_cet1 / (baseline_cet1_ratio / 100.0)
 total_assets = base_rwa / p["rwa_density"]
 loan_book = total_assets * p["loan_share_assets"]
@@ -170,7 +171,7 @@ opening_ratio_check = (starting_cet1 / base_rwa) * 100 if base_rwa > 0 else 0.0
 # -----------------------------
 # Stage 1: Geopolitical -> macro translation
 # -----------------------------
-# Interpret as peak one-year stress conditions rather than cumulative multi-year losses.
+# Interpreted as peak one-year stress conditions, not full cumulative multi-year losses.
 duration_factor = clamp(0.65 + 0.35 * duration_years, 0.70, 1.40)
 
 oil_peak = 75 + (severity * 6 * oil_dependency) * duration_factor
@@ -179,7 +180,7 @@ credit_spread_shock_bps = (severity * 10 + duration_years * 18) * duration_facto
 wholesale_funding_spread_bps = (severity * 9 + duration_years * 14) * duration_factor
 fx_stress_index = (severity * 0.45 + duration_years * 0.60) * (1 + 0.35 * sanctions_exposure)
 
-macro_multiplier = 1 + 0.035 * severity + 0.04 * duration_years
+macro_multiplier = 1 + 0.04 * severity + 0.05 * duration_years
 
 
 # -----------------------------
@@ -198,26 +199,26 @@ market_loss = max(0.0, raw_market_loss - hedging_benefit)
 # 2) Credit channel
 pd_multiplier = (
     1
-    + 0.30 * max(0, (oil_peak - 75) / 100)
-    + 0.45 * (yield_shock_bps / 1000)
-    + 0.35 * (credit_spread_shock_bps / 1000)
+    + 0.35 * max(0, (oil_peak - 75) / 100)
+    + 0.55 * (yield_shock_bps / 1000)
+    + 0.45 * (credit_spread_shock_bps / 1000)
 )
-pd_multiplier *= (1 + 0.18 * duration_years)
+pd_multiplier *= (1 + 0.22 * duration_years)
 pd_multiplier *= macro_multiplier
 
-sector_overlay = 1 + vulnerable_sector_share * (0.35 * oil_dependency + 0.25 * sanctions_exposure)
-stressed_pd = clamp(base_pd * pd_multiplier * sector_overlay, base_pd, 0.08)
+sector_overlay = 1 + vulnerable_sector_share * (0.45 * oil_dependency + 0.30 * sanctions_exposure)
+stressed_pd = clamp(base_pd * pd_multiplier * sector_overlay, base_pd, 0.10)
 stressed_lgd = clamp(
-    downturn_lgd * (1 + 0.04 * severity / 10 + 0.04 * max(0.0, duration_years - 1.0)),
+    downturn_lgd * (1 + 0.05 * severity / 10 + 0.05 * max(0.0, duration_years - 1.0)),
     downturn_lgd,
-    0.60,
+    0.65,
 )
-credit_loss_gross = loan_book * stressed_pd * stressed_lgd
+credit_loss = loan_book * stressed_pd * stressed_lgd
 
+# PPNR is a separate capital support line, not a direct eraser of credit loss
 ppnr_pre_stress = base_rwa * annual_ppnr_to_rwa
-ppnr_stress_factor = clamp(1 - (0.035 * severity + 0.02 * max(0.0, duration_years - 1.0)), 0.50, 0.95)
+ppnr_stress_factor = clamp(1 - (0.06 * severity + 0.03 * max(0.0, duration_years - 1.0)), 0.35, 0.85)
 stressed_ppnr = ppnr_pre_stress * ppnr_stress_factor
-credit_loss = max(0.0, credit_loss_gross - stressed_ppnr)
 
 # 3) Liquidity / funding channel
 wholesale_funding_cost = wholesale_funding * (wholesale_funding_spread_bps / 10000) * 0.65
@@ -278,12 +279,50 @@ loss_components = {
 }
 
 total_depletion = sum(loss_components.values())
-stressed_cet1 = starting_cet1 - total_depletion + capital_distribution_saved
+stressed_cet1 = starting_cet1 + stressed_ppnr + capital_distribution_saved - total_depletion
 stressed_cet1_ratio = (stressed_cet1 / stressed_rwa) * 100 if stressed_rwa > 0 else 0.0
 
 required_cet1_ratio = 9.0
 buffer_headroom = stressed_cet1_ratio - required_cet1_ratio
 breach_indicator = 99.5 if buffer_headroom <= 0 else clamp(100 - buffer_headroom * 13, 1, 95)
+
+
+# -----------------------------
+# Tables for display
+# -----------------------------
+channel_df = pd.DataFrame(
+    {
+        "Channel": list(loss_components.keys()),
+        "Loss ($B)": list(loss_components.values()),
+        "% of Total": [x / total_depletion * 100 if total_depletion > 0 else 0 for x in loss_components.values()],
+        "Primary Driver": [
+            "Rates + spreads net of hedging",
+            "Borrower default and vulnerable-sector overlay",
+            "Wholesale repricing + deposit pass-through + runoff",
+            "Sanctions + settlement friction + trapped flows",
+            "Cyber / operational event loss",
+        ],
+    }
+)
+
+bridge_df = pd.DataFrame(
+    {
+        "Capital Bridge Item": [
+            "Starting CET1",
+            "Stressed PPNR",
+            "Capital actions saved",
+            "Total stress losses",
+            "Stressed CET1",
+        ],
+        "Amount ($B)": [
+            starting_cet1,
+            stressed_ppnr,
+            capital_distribution_saved,
+            -total_depletion,
+            stressed_cet1,
+        ],
+    }
+)
 
 
 # -----------------------------
@@ -318,47 +357,50 @@ with tab1:
         f"{stressed_cet1_ratio - opening_ratio_check:.1f}%",
         delta_color="inverse",
     )
-    c3.metric("Capital Depletion", usd_billions(total_depletion))
+    c3.metric("Gross Credit Loss", usd_billions(credit_loss))
     c4.metric("Breach Indicator", f"{breach_indicator:.1f}%", delta_color="inverse")
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Starting RWA", usd_billions(base_rwa))
     c6.metric("Stressed RWA", usd_billions(stressed_rwa), usd_billions(stressed_rwa - base_rwa))
-    c7.metric("Stressed PPNR Offset", usd_billions(stressed_ppnr))
+    c7.metric("Stressed PPNR", usd_billions(stressed_ppnr))
     c8.metric("Capital Actions Saved", usd_billions(capital_distribution_saved))
 
     wf = go.Figure(
         go.Waterfall(
             orientation="v",
-            measure=["absolute", "relative", "relative", "relative", "relative", "relative", "relative", "total"],
+            measure=["absolute", "relative", "relative", "relative", "relative", "relative", "relative", "relative", "total"],
             x=[
                 "Starting CET1",
+                "PPNR",
+                "Capital Actions",
                 "Market",
                 "Credit",
                 "Liquidity / Funding",
                 "Direct Exposure / Sanctions",
                 "Operational / Cyber",
-                "Capital Actions",
                 "Stressed CET1",
             ],
             y=[
                 starting_cet1,
+                stressed_ppnr,
+                capital_distribution_saved,
                 -market_loss,
                 -credit_loss,
                 -funding_liquidity_loss,
                 -direct_exposure_loss,
                 -operational_cyber_loss,
-                capital_distribution_saved,
                 stressed_cet1,
             ],
             text=[
                 usd_billions(starting_cet1),
+                usd_billions(stressed_ppnr),
+                usd_billions(capital_distribution_saved),
                 f"-{usd_billions(market_loss)}",
                 f"-{usd_billions(credit_loss)}",
                 f"-{usd_billions(funding_liquidity_loss)}",
                 f"-{usd_billions(direct_exposure_loss)}",
                 f"-{usd_billions(operational_cyber_loss)}",
-                usd_billions(capital_distribution_saved),
                 usd_billions(stressed_cet1),
             ],
             textposition="outside",
@@ -372,9 +414,9 @@ with tab1:
         template="plotly_dark",
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        title="Capital Depletion Waterfall",
+        title="Capital Bridge Waterfall",
         showlegend=False,
-        height=520,
+        height=560,
         margin=dict(l=20, r=20, t=50, b=20),
         font=dict(color="#FFFFFF"),
     )
@@ -403,9 +445,13 @@ with tab1:
             **Credit channel**
             - Stressed PD = **{stressed_pd * 100:.2f}%**
             - Stressed LGD = **{stressed_lgd * 100:.1f}%**
-            - Gross credit loss = **{usd_billions(credit_loss_gross)}**
-            - Stressed PPNR offset = **{usd_billions(stressed_ppnr)}**
-            - Net credit loss through CET1 = **{usd_billions(credit_loss)}**
+            - Gross credit loss = **{usd_billions(credit_loss)}**
+
+            **PPNR and capital actions**
+            - Pre-stress annual PPNR = **{usd_billions(ppnr_pre_stress)}**
+            - PPNR stress factor = **{ppnr_stress_factor:.2f}x**
+            - Stressed PPNR contribution = **{usd_billions(stressed_ppnr)}**
+            - Capital actions saved = **{usd_billions(capital_distribution_saved)}**
 
             **Liquidity / funding channel**
             - Wholesale repricing = **{usd_billions(wholesale_funding_cost)}**
@@ -431,21 +477,6 @@ with tab1:
 
 with tab2:
     st.subheader("MECE Channel Structure")
-
-    channel_df = pd.DataFrame(
-        {
-            "Channel": list(loss_components.keys()),
-            "Loss ($B)": list(loss_components.values()),
-            "% of Total": [x / total_depletion * 100 if total_depletion > 0 else 0 for x in loss_components.values()],
-            "Primary Driver": [
-                "Rates + spreads net of hedging",
-                "Borrower default and vulnerable-sector overlay, net of PPNR",
-                "Wholesale repricing + deposit pass-through + runoff",
-                "Sanctions + settlement friction + trapped flows",
-                "Cyber / operational event loss",
-            ],
-        }
-    )
     st.dataframe(channel_df, use_container_width=True, hide_index=True)
 
     donut = go.Figure(
@@ -467,11 +498,12 @@ with tab2:
     )
     st.plotly_chart(donut, use_container_width=True)
 
+    st.markdown("### Capital Support Bridge")
+    st.dataframe(bridge_df, use_container_width=True, hide_index=True)
+
     st.markdown(
         """
-        **Design principle:** channels remain deliberately transparent and separately challengeable.
-
-        This build is meant to feel like a credible advisory translation of a geopolitical stress, not a black-box regulatory engine and not a catastrophe generator.
+        **Interpretation:** credit remains a real gross loss channel, while PPNR is shown separately as earnings capacity that supports capital.
         """
     )
 
@@ -491,24 +523,20 @@ with tab3:
 
     st.markdown("### Stage 2 — Apply five distinct loss channels")
     st.latex(r"L_{market} = L_{IRRBB} + L_{trading} - HedgeBenefit")
-    st.latex(r"L_{credit} = LoanBook \times PD_{stressed} \times LGD_{stressed} - PPNR_{stressed}")
+    st.latex(r"L_{credit} = LoanBook \times PD_{stressed} \times LGD_{stressed}")
+    st.latex(r"PPNR_{stressed} = PPNR_{baseline} \times StressFactor")
     st.latex(r"L_{liq} = WholesaleRepricing + DepositPassThrough + RunoffCost + BufferUsage")
     st.latex(r"L_{direct} = DirectExposure \times StressFactor")
     st.latex(r"L_{ops} = Assets \times EventRate")
 
     st.markdown("### Stage 3 — Stress both numerator and denominator")
-    st.latex(r"CET1_{stressed} = CET1_{start} - \sum L_i + CapitalActions")
+    st.latex(r"CET1_{stressed} = CET1_{start} + PPNR_{stressed} + CapitalActions - \sum L_i")
     st.latex(r"RWA_{stressed} = RWA_{start} + \sum \Delta RWA_i - Mitigation")
     st.latex(r"CET1Ratio_{stressed} = \frac{CET1_{stressed}}{RWA_{stressed}}")
 
     st.markdown(
         """
-        **What is fixed in this recalibrated version**
-        - Opening CET1 ratio now truly reconciles to opening RWA.
-        - Exposures are derived from total assets using an archetype RWA density, avoiding runaway scaling.
-        - Operational / cyber is now calibrated as a capped event-style loss rather than a large recurring-cost multiplier.
-        - Duration is interpreted as shaping a **peak stress year**, not mechanically compounding every channel.
-        - Credit, funding, and RWA inflation are all brought back into advisory-plausible ranges.
+        **Key modeling choice:** credit loss is shown gross. PPNR is not allowed to erase the credit channel; it sits separately as a capital support line.
         """
     )
 
@@ -526,7 +554,7 @@ with tab4:
         - **Reconciled opening ratio:** opening CET1 and RWA tie exactly.
         - **Archetype RWA density:** links RWA back to a more sensible asset base.
         - **Named channels:** each loss bucket maps to a clear mechanism.
-        - **PPNR and capital actions:** provides a more realistic pre-CET1 absorption narrative.
+        - **Separate PPNR treatment:** earnings support capital but do not hide gross credit damage.
         - **Numerator and denominator stress:** both capital and RWA move under stress.
 
         #### Limitations
@@ -547,7 +575,7 @@ with tab5:
         - Compare a high-severity 3-month case with a moderate-severity 24-month case.
 
         > **"How much of the downside is absorbed before CET1 is hit?"**
-        - Focus on PPNR offset and capital actions.
+        - Focus on gross credit loss, PPNR, and capital actions separately.
 
         > **"Is our ratio falling more because of losses or because of RWA inflation?"**
         - Keep severity constant and vary duration.
